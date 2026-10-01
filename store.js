@@ -271,5 +271,5 @@
 
   function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-  global.GastosStore = { SheetsStore, MemoryStore, planImport, ApiError, AuthError, SCHEMA, FORMAT, VERSION: '6' };
+  global.GastosStore = { SheetsStore, MemoryStore, planImport, ApiError, AuthError, SCHEMA, FORMAT, VERSION: '7' };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -6,7 +6,7 @@
   const { SheetsStore, MemoryStore, planImport } = window.GastosStore;
   const SCOPE_SHEETS = 'https://www.googleapis.com/auth/spreadsheets';
   const SCOPES = SCOPE_SHEETS + ' https://www.googleapis.com/auth/userinfo.email';
-  const APP_V = '6'; // precisa bater com --app-v no styles.css
+  const APP_V = '7'; // precisa bater com --app-v no styles.css
 
   /* ---------- utilidades ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -304,7 +304,7 @@
     $('#segTit').innerHTML = [['all', 'Todos']].concat(titulares.map((h) => [h, h])).map(([v, l]) => `<button data-act="tit" data-tit="${esc(v)}" aria-pressed="${ui.tit === v}">${esc(l)}</button>`).join('');
   }
   // telas que ficam no botão "Mais" da barra de baixo
-  const MAIS = [['rec', 'Fixos', 'rec', 'Cobranças que se repetem todo mês'], ['anal', 'Análises', 'anal', 'Os textos do Claude sobre cada fatura']];
+  const MAIS = [['rec', 'Fixos', 'rec', 'Cobranças que se repetem todo mês'], ['anal', 'Análises', 'anal', 'Resumo, conferência e onde economizar']];
   function sheetMais() {
     openSheet(`<h3>Mais</h3><ul class="optlist">${MAIS.map(([id, l, ic, d]) => `<li><button class="opt opt2" data-act="opt-tab" data-tab="${id}">${I[ic]}<span><strong>${l}</strong><small>${d}</small></span>${ui.tab === id ? `<span class="on">${svg('<path d="M20 6L9 17l-5-5"/>')}</span>` : ''}</button></li>`).join('')}</ul>`);
   }
@@ -677,13 +677,19 @@
         <span class="pm"><span class="dot ${hClass(r.titular)}"></span> ${esc(r.titular)} ${esc(r.cartao)} · ${r.n}× de ${money(r.valorC)} em ${r.months.map((m) => MESES[+m.slice(5, 7) - 1].toLowerCase()).join(', ')}</span><span class="pm" style="text-align:right">${esc(catName(r.cat))}</span></div>`).join('') || '<p class="empty">Nada se repete ainda.</p>'}</section>`;
   }
   function renderText(txt) {
+    // Texto das análises: blocos separados por linha em branco; "- " vira lista; linha curta terminada em ":"
+    // antes de uma lista vira título de seção. "R$" nunca fica sozinho no fim da linha.
+    const t = (s) => esc(s).replace(/R\$ (?=\d)/g, () => 'R$&nbsp;');
+    const item = (l) => `<li>${t(l.replace(/^\s*[-•]\s+/, ''))}</li>`;
+    const isItem = (l) => /^\s*[-•]\s+/.test(l);
     const blocks = String(txt || '').replace(/\r/g, '').split(/\n{2,}/);
     return blocks.map((b) => {
       const lines = b.split('\n').filter((l) => l.trim());
-      if (lines.length && lines.every((l) => /^\s*[-•]\s+/.test(l))) return `<ul>${lines.map((l) => `<li>${esc(l.replace(/^\s*[-•]\s+/, ''))}</li>`).join('')}</ul>`;
-      const head = lines.length > 1 && /:$/.test(lines[0]) && lines.slice(1).every((l) => /^\s*[-•]\s+/.test(l));
-      if (head) return `<p>${esc(lines[0])}</p><ul>${lines.slice(1).map((l) => `<li>${esc(l.replace(/^\s*[-•]\s+/, ''))}</li>`).join('')}</ul>`;
-      return `<p>${lines.map(esc).join('<br>')}</p>`;
+      if (lines.length && lines.every(isItem)) return `<ul>${lines.map(item).join('')}</ul>`;
+      const head = lines.length > 1 && /:$/.test(lines[0]) && lines.slice(1).every(isItem);
+      const titulo = head && lines[0].length <= 70 && !/[.!?]\s/.test(lines[0]);
+      if (head) return `${titulo ? `<h3 class="ah">${t(lines[0].replace(/:\s*$/, ''))}</h3>` : `<p>${t(lines[0])}</p>`}<ul>${lines.slice(1).map(item).join('')}</ul>`;
+      return `<p>${lines.map(t).join('<br>')}</p>`;
     }).join('');
   }
   function viewAnalises() {

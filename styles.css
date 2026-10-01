@@ -15,7 +15,7 @@
   --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
   --r:12px; --tab-h:62px;
-  --app-v:6; /* precisa bater com APP_V no app.js */
+  --app-v:7; /* precisa bater com APP_V no app.js */
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
@@ -221,6 +221,8 @@ button.kpi:active{background:var(--surface-2)}
 .analise .at{font:600 17px/1.3 var(--f-display);margin:0 0 2px}
 .analise .ad{font-size:12.5px;color:var(--muted);margin:0 0 10px}
 .analise p{margin:0 0 10px;max-width:70ch}
+.analise .ad + p{font-weight:500;padding:10px 12px;background:var(--accent-wash);border-radius:10px}
+.analise .ah{font:600 15.5px/1.3 var(--f-display);margin:16px 0 6px;padding-top:12px;border-top:1px solid var(--line)}
 .analise ul{margin:0 0 10px;padding-left:20px}
 .analise li{margin:3px 0}
 details.fold summary{cursor:pointer;color:var(--accent);font-weight:500;padding:6px 0}

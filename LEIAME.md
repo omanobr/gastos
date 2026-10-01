@@ -56,7 +56,7 @@ Se quiser um arquivo `.apk` em vez de instalar pelo Chrome: abra pwabuilder.com,
 
 ## 5. Todo mês
 
-1. Mande o PDF da fatura nova para o Claude e peça o arquivo de importação. Ele extrai os lançamentos, confere os totais com a fatura, sugere as categorias e escreve a análise do mês.
+1. Mande o PDF da fatura nova para o Claude e peça o arquivo de importação. Ele extrai os lançamentos, confere os totais com a fatura, sugere as categorias e escreve dois textos para **Mais > Análises**: o resumo do mês e a análise financeira (o que foi conferido, o que vocês precisam confirmar, onde dá para economizar, parcelas já contratadas e uma simulação de cortes).
 2. No app: **Menu > Importar arquivo do Claude**. Lançamentos que já estão no banco são ignorados, e as regras que vocês criaram no app ("Mover os N e os próximos") têm prioridade sobre a sugestão do arquivo.
 3. Se o conector **Google Sheets** estiver ligado na conversa com o Claude, ele pode gravar a fatura direto na planilha, sem arquivo.
 
