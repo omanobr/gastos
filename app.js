@@ -6,6 +6,7 @@
   const { SheetsStore, MemoryStore, planImport } = window.GastosStore;
   const SCOPE_SHEETS = 'https://www.googleapis.com/auth/spreadsheets';
   const SCOPES = SCOPE_SHEETS + ' https://www.googleapis.com/auth/userinfo.email';
+  const APP_V = '5'; // precisa bater com --app-v no styles.css
 
   /* ---------- utilidades ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -44,6 +45,7 @@
     refresh: svg('<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>'),
     table: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/>'),
     swap: svg('<path d="M7 7h13l-4-4M17 17H4l4 4"/>'),
+    dots: svg('<circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/>', true),
     pie: svg('<path d="M21 12a9 9 0 1 1-9-9v9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/>'),
     out: svg('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'),
   };
@@ -57,10 +59,44 @@
   let titulares = [];
   let lastLoad = 0;
   let pick = null; // gaveta de categoria aberta: { ids }
-  const ui = { tab: 'resumo', fat: 'all', tit: 'all', cat: 'all', tipo: 'all', q: '', qn: [], limit: 150, selMode: false, sel: new Set(), renaming: null, deleting: null, pendingImport: null, pieMode: 'juntos', pieSel: null };
+  const ui = { tab: 'resumo', fat: 'all', tit: 'all', cat: 'all', tipo: 'all', q: '', qn: [], limit: 150, selMode: false, sel: new Set(), renaming: null, deleting: null, pendingImport: null, pieMode: 'juntos', pieSel: null, grouping: null, renamingGroup: null };
 
   const catOf = (t) => { const c = catById.get(t.categoria); return c && c.ativa !== false ? t.categoria : 'sem'; };
   const catName = (id) => (catById.get(id) || {}).nome || 'Sem categoria';
+  // Grupo (categoria mãe). Vale o que estiver na coluna "grupo" da planilha; sem nada lá, usa este padrão.
+  // Categoria sem grupo padrão (ex.: as criadas por vocês) vira um grupo sozinha, com o próprio nome.
+  const GRUPO_PADRAO = {
+    mercado: 'Alimentação', restaurantes: 'Alimentação', lanches: 'Alimentação', delivery: 'Alimentação',
+    app: 'Transporte', combustivel: 'Transporte', estacionamento: 'Transporte', veiculo: 'Transporte',
+    farmacia: 'Saúde e bem-estar', saude: 'Saúde e bem-estar', esporte: 'Saúde e bem-estar', cuidados: 'Saúde e bem-estar',
+    online: 'Compras', vestuario: 'Compras', eletronicos: 'Compras', lojas: 'Compras', casa: 'Compras',
+    viagem: 'Lazer e viagens', lazer: 'Lazer e viagens',
+    assinaturas: 'Serviços e assinaturas', tecnologia: 'Serviços e assinaturas', seguros: 'Serviços e assinaturas',
+    educacao: 'Serviços e assinaturas', pontos: 'Serviços e assinaturas', iof: 'Serviços e assinaturas',
+    creditos: 'Créditos e estornos',
+  };
+  const grupoOf = (id) => {
+    if (id === 'sem') return 'Sem categoria';
+    const c = catById.get(id);
+    if (c && String(c.grupo || '').trim()) return String(c.grupo).trim();
+    return GRUPO_PADRAO[id] || (c ? c.nome : 'Sem categoria');
+  };
+  const soloGroup = (c) => grupoOf(c.id) === c.nome; // categoria que é grupo sozinha
+  function groupedCats() {
+    const a = activeCats();
+    const sem = a.find((c) => c.id === 'sem');
+    const m = new Map(), solo = [];
+    for (const c of a) {
+      if (c.id === 'sem') continue;
+      if (soloGroup(c)) { solo.push(c); continue; }
+      const g = grupoOf(c.id); if (!m.has(g)) m.set(g, []); m.get(g).push(c);
+    }
+    const byName = (x, y) => coll.compare(x.nome, y.nome);
+    const out = [...m.entries()].sort((x, y) => coll.compare(x[0], y[0])).map(([g, cats]) => ({ g, cats: cats.sort(byName) }));
+    if (solo.length) out.push({ g: '', cats: solo.sort(byName) });
+    return (sem ? [{ g: null, cats: [sem] }] : []).concat(out);
+  }
+  const realGroups = () => [...new Set(activeCats().filter((c) => c.id !== 'sem' && !soloGroup(c)).map((c) => grupoOf(c.id)))].sort(coll.compare);
   const needsReview = (t) => t.conferir && catOf(t) !== 'sem';
   const inFat = (t) => ui.fat === 'all' || t.fatura === ui.fat;
   const inTit = (t) => ui.tit === 'all' || t.titular === ui.tit;
@@ -148,7 +184,7 @@
     document.body.style.overflow = 'hidden';
     if (focusSel) { const f = $(focusSel, s); if (f && matchMedia('(pointer: fine)').matches) f.focus(); }
   }
-  function closeSheet() { const s = $('#sheet'); s.hidden = true; s.innerHTML = ''; document.body.style.overflow = ''; pick = null; ui.renaming = ui.deleting = null; }
+  function closeSheet() { const s = $('#sheet'); s.hidden = true; s.innerHTML = ''; document.body.style.overflow = ''; pick = null; ui.renaming = ui.deleting = ui.grouping = ui.renamingGroup = null; }
   function handleError(e) {
     console.error(e);
     if (e && e.name === 'AuthError') {
@@ -250,10 +286,16 @@
     $('#btnFatura').innerHTML = `<span>${ui.fat === 'all' ? 'Todas as faturas' : 'Fatura ' + esc(fatLabel(ui.fat))}</span>${I.down}`;
     $('#segTit').innerHTML = [['all', 'Todos']].concat(titulares.map((h) => [h, h])).map(([v, l]) => `<button data-act="tit" data-tit="${esc(v)}" aria-pressed="${ui.tit === v}">${esc(l)}</button>`).join('');
   }
+  // telas que ficam no botão "Mais" da barra de baixo
+  const MAIS = [['rec', 'Fixos', 'rec', 'Cobranças que se repetem todo mês'], ['anal', 'Análises', 'anal', 'Os textos do Claude sobre cada fatura']];
+  function sheetMais() {
+    openSheet(`<h3>Mais</h3><ul class="optlist">${MAIS.map(([id, l, ic, d]) => `<li><button class="opt opt2" data-act="opt-tab" data-tab="${id}">${I[ic]}<span><strong>${l}</strong><small>${d}</small></span>${ui.tab === id ? `<span class="on">${svg('<path d="M20 6L9 17l-5-5"/>')}</span>` : ''}</button></li>`).join('')}</ul>`);
+  }
   function renderTabbar() {
     const pend = T.filter((t) => catOf(t) === 'sem' || needsReview(t)).length;
-    const tabs = [['resumo', 'Resumo', I.resumo], ['graf', 'Gráficos', I.pie], ['lanc', 'Extrato', I.lanc], ['parc', 'Parcelas', I.parc], ['rec', 'Fixos', I.rec], ['anal', 'Análises', I.anal]];
-    $('#tabbar').innerHTML = tabs.map(([id, l, ic]) => `<button role="tab" data-act="tab" data-tab="${id}" aria-selected="${ui.tab === id}">${ic}<span class="tl">${l}</span>${id === 'lanc' && pend ? `<span class="badge">${pend}</span>` : ''}</button>`).join('');
+    const tabs = [['resumo', 'Resumo', I.resumo], ['graf', 'Gráficos', I.pie], ['lanc', 'Extrato', I.lanc], ['parc', 'Parcelas', I.parc], ['mais', 'Mais', I.dots]];
+    const on = (id) => (id === 'mais' ? MAIS.some((m) => m[0] === ui.tab) : ui.tab === id);
+    $('#tabbar').innerHTML = tabs.map(([id, l, ic]) => `<button role="tab" data-act="${id === 'mais' ? 'mais' : 'tab'}" data-tab="${id}" aria-selected="${on(id)}">${ic}<span class="tl">${id === 'mais' && on(id) ? MAIS.find((m) => m[0] === ui.tab)[1] : l}</span>${id === 'lanc' && pend ? `<span class="badge">${pend}</span>` : ''}</button>`).join('');
   }
   function viewEmpty() {
     return `<section class="card"><h2>O banco está vazio</h2><p class="hint">Importe o arquivo de dados que o Claude gerou (termina em .json). Depois disso, os lançamentos aparecem aqui para os dois.</p><button class="btn primary block" data-act="menu-import">${'Importar arquivo'}</button></section>`;
@@ -306,52 +348,94 @@
   }
 
   /* ---------- gráficos ---------- */
-  // Cor fixa por categoria, calculada sobre o banco inteiro, para a cor não mudar com os filtros de fatura e titular.
-  // Quando uma delas é desmarcada, a cor livre passa para a próxima maior; as outras não mudam de cor.
-  // Azul e laranja ficam reservados para os titulares. As demais categorias aparecem em cinza, cada uma na sua fatia.
+  // Cada fatia é um grupo (categoria mãe) ou uma categoria, conforme a escolha no alto do gráfico.
+  // Cor fixa por fatia, calculada sobre o banco inteiro, para não mudar com os filtros de fatura e titular:
+  // entram primeiro as 3 maiores de cada titular e depois as maiores do total. Se uma delas é desmarcada,
+  // a cor livre passa para a próxima; as outras não mudam. Azul e laranja ficam reservados para os titulares.
+  // O que fica de fora das 6 cores vira uma fatia cinza só ("Outras").
   const PIE_K = 6;
-  const FORA_KEY = 'gastos.graf.fora';
-  let fora = new Set();
+  const FORA_KEY = 'gastos.graf.fora', VIEW_KEY = 'gastos.graf.view';
+  let fora = new Set(); // categorias desmarcadas (vale para as duas visões)
   try { fora = new Set(JSON.parse(LS.get(FORA_KEY) || '[]')); } catch { fora = new Set(); }
   const saveFora = () => LS.set(FORA_KEY, JSON.stringify([...fora]));
+  ui.pieView = LS.get(VIEW_KEY) === 'cat' ? 'cat' : 'grupo';
   const BRLc = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', notation: 'compact', maximumFractionDigits: 1 });
   const CHECK = svg('<path d="M20 6L9 17l-5-5"/>');
-  function catSlots() {
-    // Entram primeiro as 3 maiores categorias de cada titular (para a maior de cada um não ficar cinza) e depois as maiores do total.
-    const tot = new Map(), perT = new Map();
+  const DASH = svg('<path d="M6 12h12"/>');
+  const entKey = (cid, view) => (view === 'grupo' ? 'g:' + grupoOf(cid) : cid);
+  const entLabel = (k) => (k.startsWith('g:') ? k.slice(2) : catName(k));
+  const isGroupKey = (k) => typeof k === 'string' && k.startsWith('g:');
+  function membersOf(k) { if (!isGroupKey(k)) return [k]; const g = k.slice(2); return activeCats().filter((c) => grupoOf(c.id) === g).map((c) => c.id); }
+  function catNet(list) { const m = new Map(); for (const t of list) { const c = catOf(t); m.set(c, (m.get(c) || 0) + t.cents); } return m; }
+  function entRows(list, view) {
+    const by = new Map();
+    for (const [cid, v] of catNet(list)) {
+      if (v <= 0) continue; // créditos e estornos ficam fora da pizza
+      const k = entKey(cid, view);
+      if (!by.has(k)) by.set(k, { id: k, label: entLabel(k), members: [], tot: 0, all: 0 });
+      const e = by.get(k), on = !fora.has(cid);
+      e.members.push({ id: cid, tot: v, on }); e.all += v; if (on) e.tot += v;
+    }
+    const out = [...by.values()];
+    for (const e of out) { e.members.sort((x, y) => y.tot - x.tot); const n = e.members.filter((x) => x.on).length; e.on = n > 0; e.partial = n > 0 && n < e.members.length; }
+    return out.sort((x, y) => y.all - x.all);
+  }
+  function entSlots(view) {
+    const net = new Map(), netT = new Map();
     for (const t of T) {
       const c = catOf(t);
-      tot.set(c, (tot.get(c) || 0) + t.cents);
-      if (!perT.has(t.titular)) perT.set(t.titular, new Map());
-      const pm = perT.get(t.titular); pm.set(c, (pm.get(c) || 0) + t.cents);
+      net.set(c, (net.get(c) || 0) + t.cents);
+      if (!netT.has(t.titular)) netT.set(t.titular, new Map());
+      const m = netT.get(t.titular); m.set(c, (m.get(c) || 0) + t.cents);
     }
-    const byTot = (a, b) => tot.get(b) - tot.get(a);
-    const ranked = [...tot.keys()].filter((id) => tot.get(id) > 0).sort(byTot);
+    const agg = (m) => { const e = new Map(); for (const [c, v] of m) if (v > 0) { const k = entKey(c, view); e.set(k, (e.get(k) || 0) + v); } return e; };
+    const tot = agg(net);
+    const byTot = (x, y) => tot.get(y) - tot.get(x);
+    const ranked = [...tot.keys()].sort(byTot);
     const fav = new Set();
-    for (const pm of perT.values()) [...pm.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 3).forEach(([id]) => fav.add(id));
-    const order = ranked.filter((id) => fav.has(id)).concat(ranked.filter((id) => !fav.has(id)));
-    const base = order.slice(0, PIE_K).sort(byTot);
+    for (const m of netT.values()) [...agg(m).entries()].sort((x, y) => y[1] - x[1]).slice(0, 3).forEach(([k]) => fav.add(k));
+    const order = ranked.filter((k) => fav.has(k)).concat(ranked.filter((k) => !fav.has(k)));
+    const mem = new Map();
+    for (const [c, v] of net) if (v > 0) { const k = entKey(c, view); if (!mem.has(k)) mem.set(k, []); mem.get(k).push(c); }
+    const off = (k) => (mem.get(k) || []).every((c) => fora.has(c));
     const slots = new Map(), free = [];
-    base.forEach((id, i) => { if (fora.has(id)) free.push(i); else slots.set(id, i); });
-    for (const id of order.slice(PIE_K)) { if (!free.length) break; if (!fora.has(id)) slots.set(id, free.shift()); }
+    order.slice(0, PIE_K).sort(byTot).forEach((k, i) => { if (off(k)) free.push(i); else slots.set(k, i); });
+    for (const k of order.slice(PIE_K)) { if (!free.length) break; if (!off(k)) slots.set(k, free.shift()); }
     return slots;
   }
-  function pieModel(list, slots) {
-    const all = catAgg(list);
-    const rows = all.filter((r) => r.tot > 0).sort((a, b) => b.tot - a.tot);
-    const inc = rows.filter((r) => !fora.has(r.id));
-    const total = inc.reduce((s, r) => s + r.tot, 0);
-    const colored = inc.filter((r) => slots.has(r.id)).sort((a, b) => slots.get(a.id) - slots.get(b.id));
-    const gray = inc.filter((r) => !slots.has(r.id));
-    const slices = colored.map((r) => ({ id: r.id, v: r.tot, k: 'pk' + slots.get(r.id) })).concat(gray.map((r) => ({ id: r.id, v: r.tot, k: 'pkx' })));
-    const credit = all.filter((r) => r.tot < 0).reduce((s, r) => s + r.tot, 0);
-    return { rows, inc, total, slices, credit };
+  function pieModel(list, slots, view) {
+    const rows = entRows(list, view);
+    const inc = rows.filter((r) => r.on);
+    const total = inc.reduce((x, r) => x + r.tot, 0);
+    const slices = inc.filter((r) => slots.has(r.id)).sort((x, y) => slots.get(x.id) - slots.get(y.id))
+      .map((r) => ({ id: r.id, v: r.tot, k: 'pk' + slots.get(r.id), label: r.label }));
+    const rest = inc.filter((r) => !slots.has(r.id));
+    const restV = rest.reduce((x, r) => x + r.tot, 0);
+    if (restV > 0) slices.push({ id: '__outras', v: restV, k: 'pkx', members: rest.map((r) => r.id), label: rest.length === 1 ? rest[0].label : view === 'grupo' ? `Outros ${rest.length} grupos` : `Outras ${rest.length} categorias` });
+    let credit = 0; for (const v of catNet(list).values()) if (v < 0) credit += v;
+    return { rows, inc, total, slices, credit, view };
   }
   function selInfo(m) {
     const id = ui.pieSel;
     if (!id) return null;
-    const r = m.inc.find((x) => x.id === id);
-    return { id, label: catName(id), v: r ? r.tot : 0, slice: r ? m.slices.find((x) => x.id === id) : null, off: fora.has(id) };
+    if (id === '__outras') { const sl = m.slices.find((x) => x.id === '__outras'); return { id, label: sl ? sl.label : 'Outras', v: sl ? sl.v : 0, slice: sl || null, group: true }; }
+    const r = m.rows.find((x) => x.id === id);
+    if (!r) return { id, label: entLabel(id), v: 0, slice: null, row: null };
+    const slice = r.on ? m.slices.find((x) => x.id === id || (x.members && x.members.includes(id))) : null;
+    return { id, label: r.label, v: r.tot, slice, off: !r.on, row: r };
+  }
+  // cor de cada fatia, com reserva no próprio app (se o styles.css estiver desatualizado, a pizza não fica preta)
+  const PIE_HEX = { pk0: '#1baf7a', pk1: '#eda100', pk2: '#e87ba4', pk3: '#008300', pk4: '#4a3aa7', pk5: '#e34948', pkx: '#85928e' };
+  function pieColor(k) {
+    let v = '';
+    try { v = getComputedStyle(document.documentElement).getPropertyValue('--' + k.slice(1)).trim(); } catch { v = ''; }
+    return /^#[0-9a-f]{6}$/i.test(v) ? v : PIE_HEX[k];
+  }
+  function inkOn(hex) { // texto escuro ou branco, o que tiver mais contraste com a cor da fatia
+    const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    const n = parseInt(hex.slice(1), 16);
+    const L = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+    return 1.05 / (L + 0.05) >= (L + 0.05) / (0.0128 + 0.05) ? '#ffffff' : '#15201e';
   }
   function sectorPath(a0, a1) {
     const C = 60, R1 = 57, R0 = 37;
@@ -360,17 +444,24 @@
     const big = a1 - a0 > Math.PI ? 1 : 0;
     return `M${P(R1, a0)}A${R1} ${R1} 0 ${big} 1 ${P(R1, a1)}L${P(R0, a1)}A${R0} ${R0} 0 ${big} 0 ${P(R0, a0)}Z`;
   }
-  function donut(m, s, aria) {
-    let a = 0, body = '';
-    if (!m.total) body = `<path class="pk-empty" fill-rule="evenodd" d="${sectorPath(0, 2 * Math.PI)}"/>`;
+  function donut(m, s, aria, small) {
+    let a = 0, body = '', labels = '';
+    const minFrac = small ? 0.09 : 0.045; // só escreve o percentual onde ele cabe
+    if (!m.total) body = `<path class="pk-empty" fill-rule="evenodd" style="fill:var(--line,#d9e1de)" d="${sectorPath(0, 2 * Math.PI)}"/>`;
     else for (const x of m.slices) {
-      const a1 = a + (x.v / m.total) * 2 * Math.PI;
-      const cls = x.k + (s && s.slice ? (s.slice === x ? ' on' : ' dim') : '');
-      body += `<path class="${cls}" fill-rule="evenodd" d="${sectorPath(a, a1)}" data-act="pie-sel" data-cat="${esc(x.id)}"><title>${esc(catName(x.id))}: ${money(x.v)} (${pct(x.v, m.total)})</title></path>`;
+      const frac = x.v / m.total;
+      const a1 = a + frac * 2 * Math.PI;
+      const dim = s && s.slice && s.slice !== x;
+      const hex = pieColor(x.k);
+      body += `<path class="${x.k}${dim ? ' dim' : ''}" fill-rule="evenodd" style="fill:${hex}" d="${sectorPath(a, a1)}" data-act="pie-sel" data-cat="${esc(x.id)}"><title>${esc(x.label)}: ${money(x.v)} (${pct(x.v, m.total)})</title></path>`;
+      if (frac >= minFrac) {
+        const mid = (a + a1) / 2, r = 47;
+        labels += `<text class="pl${dim ? ' dim' : ''}" text-anchor="middle" dominant-baseline="central" x="${(60 + r * Math.sin(mid)).toFixed(2)}" y="${(60 - r * Math.cos(mid)).toFixed(2)}" fill="${inkOn(hex)}">${Math.round(frac * 100)}%</text>`;
+      }
       a = a1;
     }
     body += '<circle cx="60" cy="60" r="36" fill="transparent" data-act="pie-sel" data-cat=""/>';
-    return `<svg class="donut" viewBox="0 0 120 120" role="img" aria-label="${esc(aria)}">${body}</svg>`;
+    return `<svg class="donut${small ? ' small' : ''}" viewBox="0 0 120 120" role="img" aria-label="${esc(aria)}">${body}${labels}</svg>`;
   }
   function donutCenter(m, s, compact, title) {
     const f = compact ? (c) => BRLc.format(c / 100) : money;
@@ -379,54 +470,75 @@
       const p = s.off ? 'fora do gráfico' : s.v && m.total ? pct(s.v, m.total) : 'sem gastos';
       return `<div class="dc">${head}<span class="dn">${esc(s.label)}</span><span class="dv">${f(s.v)}</span><span class="dp">${p}</span></div>`;
     }
-    const n = m.inc.length;
-    return `<div class="dc">${head || '<span class="dn">No gráfico</span>'}<span class="dv">${f(m.total)}</span><span class="dp">${n} ${n === 1 ? 'categoria' : 'categorias'}</span></div>`;
+    const n = m.inc.length, w = m.view === 'grupo' ? ['grupo', 'grupos'] : ['categoria', 'categorias'];
+    return `<div class="dc">${head || '<span class="dn">No gráfico</span>'}<span class="dv">${f(m.total)}</span><span class="dp">${n} ${n === 1 ? w[0] : w[1]}</span></div>`;
+  }
+  function selCats(m, s) { // categorias que entram na divisão entre titulares
+    const on = (r) => r.members.filter((x) => x.on).map((x) => x.id);
+    if (!s) return m.inc.flatMap(on);
+    if (s.id === '__outras') return (s.slice ? s.slice.members : []).flatMap((k) => { const r = m.rows.find((x) => x.id === k); return r ? on(r) : []; });
+    if (s.row) return s.row.on ? on(s.row) : s.row.members.map((x) => x.id);
+    return membersOf(s.id);
   }
   function splitHtml(LF, m) {
     const s = selInfo(m);
-    const set = new Set(s ? [s.id] : m.inc.map((r) => r.id));
+    const set = new Set(selCats(m, s));
     const by = {};
     for (const t of LF) if (set.has(catOf(t))) by[t.titular] = (by[t.titular] || 0) + t.cents;
     const pos = titulares.map((h) => [h, Math.max(0, by[h] || 0)]);
-    const tot = pos.reduce((a, [, v]) => a + v, 0);
+    const tot = pos.reduce((x, [, v]) => x + v, 0);
     const segs = pos.filter(([, v]) => v > 0);
     const bar = tot
       ? `<div class="split100">${segs.map(([h, v], i) => `<span class="bseg ${hClass(h)}${i === 0 ? ' first' : ''}${i === segs.length - 1 ? ' end' : ''}" style="width:${((v / tot) * 100).toFixed(2)}%" title="${esc(h)}: ${money(v)}"></span>`).join('')}</div>`
       : '<div class="split100"><span class="bseg empty" style="width:100%"></span></div>';
     const labels = titulares.map((h) => `<span class="sl"><i class="sw ${hClass(h)}"></i>${esc(h)} <strong class="num">${money(by[h] || 0)}</strong>${tot ? `<span class="num muted">${pct(Math.max(0, by[h] || 0), tot)}</span>` : ''}</span>`).join('');
-    const what = s ? esc(s.label) : m.inc.length < m.rows.length ? 'categorias marcadas' : 'todas as categorias';
+    const what = s ? esc(s.label) : m.inc.length < m.rows.length || m.rows.some((r) => r.partial) ? 'o que está marcado no gráfico' : 'tudo';
     return `<div class="gsplit"><div class="gsh"><span class="eyebrow">Divisão entre titulares</span><span class="gsw">${what}</span></div>${bar}<div class="slabels">${labels}</div></div>`;
+  }
+  function drillHtml(s) { // o que tem dentro do grupo tocado
+    if (!s || !s.row || !isGroupKey(s.id)) return '';
+    const mem = s.row.members;
+    const tot = mem.filter((x) => x.on).reduce((x, y) => x + y.tot, 0);
+    const max = Math.max(1, ...mem.map((x) => x.tot));
+    const hex = pieColor(s.slice ? s.slice.k : 'pkx');
+    return `<div class="gsub"><div class="gsh"><span class="eyebrow">Dentro de ${esc(s.label)}</span><span class="gsw">toque numa categoria para ver os lançamentos</span></div>${mem.map((x) => `<button class="subrow${x.on ? '' : ' off'}" data-act="goto-cat" data-cat="${esc(x.id)}"><span class="sn">${esc(catName(x.id))}</span><span class="sv num">${money(x.tot)}</span><span class="sp num">${x.on && tot ? pct(x.tot, tot) : 'fora'}</span><span class="sbar"><i style="width:${((x.tot / max) * 100).toFixed(1)}%;background:${x.on ? hex : 'var(--line-strong,#bfcac7)'}"></i></span></button>`).join('')}</div>`;
   }
   function viewGraficos() {
     const LF = T.filter(inFat);
     const L = LF.filter(inTit);
-    const slots = catSlots();
-    const m = pieModel(L, slots);
+    const view = ui.pieView;
+    const slots = entSlots(view);
+    const m = pieModel(L, slots, view);
     const multi = ui.tit === 'all' && titulares.length > 1;
     const sep = multi && ui.pieMode === 'sep';
+    if (ui.pieSel === '__outras' && !m.slices.some((x) => x.id === '__outras')) ui.pieSel = null;
     const s = selInfo(m);
-    const per = sep ? titulares.map((h) => ({ h, m: pieModel(LF.filter((t) => t.titular === h), slots) })) : [];
+    const per = sep ? titulares.map((h) => ({ h, m: pieModel(LF.filter((t) => t.titular === h), slots, view) })) : [];
+    const w = view === 'grupo' ? ['grupo', 'grupos', 'Os grupos'] : ['categoria', 'categorias', 'As categorias'];
     const charts = sep
-      ? `<div class="donuts two">${per.map((p) => `<div class="dwrap small">${donut(p.m, selInfo(p.m), `Gastos de ${p.h} por categoria`)}${donutCenter(p.m, selInfo(p.m), true, `<span class="dot ${hClass(p.h)}"></span>${esc(p.h)}`)}</div>`).join('')}</div>`
-      : `<div class="donuts"><div class="dwrap">${donut(m, s, 'Gastos por categoria')}${donutCenter(m, s, false)}</div></div>`;
-    const ctrl = multi ? `<div class="gctrl"><div class="seg" role="group" aria-label="Como mostrar"><button data-act="pie-mode" data-mode="juntos" aria-pressed="${!sep}">Juntos</button><button data-act="pie-mode" data-mode="sep" aria-pressed="${sep}">Por titular</button></div></div>` : '';
-    const act = s
-      ? `<button class="btn small block" data-act="goto-cat" data-cat="${esc(s.id)}">Ver os lançamentos dessa categoria</button>`
-      : '<p class="hint center">Toque numa fatia ou num nome da lista para destacar.</p>';
-    const nOff = m.rows.filter((r) => fora.has(r.id)).length;
-    const offV = m.rows.filter((r) => fora.has(r.id)).reduce((a, r) => a + r.tot, 0);
-    const bar = `<div class="lgbar"><span>${m.rows.length - nOff} de ${m.rows.length} categorias no gráfico${nOff ? ` · fora: <span class="num">${money(offV)}</span>` : ''}</span><span class="lgbtns">${nOff ? '<button class="linkbtn" data-act="pie-all">Marcar todas</button>' : ''}${m.rows.length - nOff ? '<button class="linkbtn" data-act="pie-none">Desmarcar todas</button>' : ''}</span></div>`;
+      ? `<div class="donuts two">${per.map((p) => `<div class="dwrap small">${donut(p.m, selInfo(p.m), `Gastos de ${p.h} por ${w[0]}`, true)}${donutCenter(p.m, selInfo(p.m), true, `<span class="dot ${hClass(p.h)}"></span>${esc(p.h)}`)}</div>`).join('')}</div>`
+      : `<div class="donuts"><div class="dwrap">${donut(m, s, `Gastos por ${w[0]}`)}${donutCenter(m, s, false)}</div></div>`;
+    const ctrl = `<div class="gctrl"><div class="seg" role="group" aria-label="Fatias por"><button data-act="pie-view" data-view="grupo" aria-pressed="${view === 'grupo'}">Grupos</button><button data-act="pie-view" data-view="cat" aria-pressed="${view === 'cat'}">Categorias</button></div>${multi ? `<div class="seg" role="group" aria-label="Titulares"><button data-act="pie-mode" data-mode="juntos" aria-pressed="${!sep}">Juntos</button><button data-act="pie-mode" data-mode="sep" aria-pressed="${sep}">Por titular</button></div>` : ''}</div>`;
+    let act;
+    if (!s) act = `<p class="hint center">Toque numa fatia ou num nome da lista para ${view === 'grupo' ? 'ver o que tem dentro' : 'destacar'}.</p>`;
+    else if (s.id === '__outras') act = `<p class="hint center">${w[2]} com o quadrado cinza, na lista, formam essa fatia.</p>`;
+    else if (isGroupKey(s.id)) act = '';
+    else act = `<button class="btn small block" data-act="goto-cat" data-cat="${esc(s.id)}">Ver os lançamentos dessa categoria</button>`;
+    const nOn = m.inc.length;
+    const offV = m.rows.reduce((x, r) => x + (r.all - r.tot), 0);
+    const bar = `<div class="lgbar"><span>${nOn} de ${m.rows.length} ${w[1]} no gráfico${offV ? ` · fora: <span class="num">${money(offV)}</span>` : ''}</span><span class="lgbtns">${offV ? '<button class="linkbtn" data-act="pie-all">Marcar tudo</button>' : ''}${nOn ? '<button class="linkbtn" data-act="pie-none">Desmarcar tudo</button>' : ''}</span></div>`;
     const list = m.rows.map((r) => {
-      const on = !fora.has(r.id);
       const k = slots.has(r.id) ? 'pk' + slots.get(r.id) : 'pkx';
-      const nm = esc(catName(r.id));
-      const sub = sep ? `<span class="lsub num">${per.map((p) => { const x = p.m.rows.find((y) => y.id === r.id); const v = x ? x.tot : 0; return `${esc(p.h)} ${money(v)}${on && v && p.m.total ? ' · ' + pct(v, p.m.total) : ''}`; }).join('<br>')}</span>` : '';
-      return `<div class="lg${on ? '' : ' off'}${ui.pieSel === r.id ? ' sel' : ''}"><button class="lgchk" data-act="pie-toggle" data-cat="${esc(r.id)}" aria-pressed="${on}" aria-label="${on ? 'Tirar do gráfico' : 'Pôr no gráfico'}: ${nm}"><span class="box">${on ? CHECK : ''}</span></button><button class="lgmain" data-act="pie-sel" data-cat="${esc(r.id)}"><i class="sw ${k}"></i><span class="ln">${nm}</span><span class="lnum"><span class="lv num">${money(r.tot)}</span><span class="lp num">${on && m.total ? pct(r.tot, m.total) : 'fora'}</span></span>${sub}</button></div>`;
+      const state = !r.on ? 'false' : r.partial ? 'mixed' : 'true';
+      const sub = [];
+      if (view === 'grupo') sub.push(`<span class="lmem">${r.members.map((x) => `<span${x.on ? '' : ' class="xoff"'}>${esc(catName(x.id))}</span>`).join(', ')}</span>`);
+      if (sep) sub.push(`<span class="lsub num">${per.map((p) => { const x = p.m.rows.find((y) => y.id === r.id); const v = x ? x.tot : 0; return `${esc(p.h)} ${money(v)}${v && p.m.total ? ' · ' + pct(v, p.m.total) : ''}`; }).join('<br>')}</span>`);
+      return `<div class="lg${r.on ? '' : ' off'}${ui.pieSel === r.id ? ' sel' : ''}"><button class="lgchk" data-act="pie-toggle" data-ent="${esc(r.id)}" aria-pressed="${state}" aria-label="${r.on ? 'Tirar do gráfico' : 'Pôr no gráfico'}: ${esc(r.label)}"><span class="box">${state === 'true' ? CHECK : state === 'mixed' ? DASH : ''}</span></button><button class="lgmain" data-act="pie-sel" data-cat="${esc(r.id)}"><i class="sw ${k}" style="background:${pieColor(k)}"></i><span class="ln">${esc(r.label)}</span><span class="lnum"><span class="lv num">${money(r.on ? r.tot : r.all)}</span><span class="lp num">${r.on && m.total ? pct(r.tot, m.total) : 'fora'}</span></span>${sub.join('')}</button></div>`;
     }).join('');
     const credit = m.credit < 0 ? `<p class="hint gnote">Créditos e estornos (<span class="num">${money(m.credit)}</span>) não entram no gráfico.</p>` : '';
     const scope = (ui.fat === 'all' ? `todas as ${D.faturas.length} faturas` : 'a fatura ' + esc(fatLabel(ui.fat))) + (ui.tit === 'all' ? '' : ', só ' + esc(ui.tit));
-    return `<section class="card graf"><h2>Gastos por categoria</h2><p class="hint">Percentual sobre ${scope}. Desmarque na lista o que não quer ver no gráfico.</p>
-      <div class="gbody"><div class="gleft">${ctrl}${charts}<div class="gact">${act}</div>${multi ? splitHtml(LF, m) : ''}</div>
+    return `<section class="card graf"><h2>Para onde vai o dinheiro</h2><p class="hint">Percentual sobre ${scope}. Desmarque na lista o que não quer ver no gráfico.</p>
+      <div class="gbody"><div class="gleft">${ctrl}${charts}<div class="gact">${act}</div>${drillHtml(s)}${multi ? splitHtml(LF, m) : ''}</div>
       <div class="gright">${bar}<div class="lglist">${list || '<p class="empty">Nada neste filtro.</p>'}</div>${credit}</div></div></section>`;
   }
   function txLine(t) {
@@ -560,10 +672,11 @@
   }
   function renderPickList(q, cur) {
     const qn = norm(q.trim());
-    const list = sortedCats().filter((c) => !qn || norm(c.nome).includes(qn));
+    const match = (c) => !qn || norm(c.nome).includes(qn) || norm(grupoOf(c.id)).includes(qn);
+    const groups = groupedCats().map((x) => ({ g: x.g, cats: x.cats.filter(match) })).filter((x) => x.cats.length);
     const exists = activeCats().some((c) => norm(c.nome) === qn);
     $('#pickList').innerHTML = (qn && !exists ? `<li><button class="opt" data-act="pick-new">${svg('<path d="M12 5v14M5 12h14"/>')} Criar “${esc(q.trim())}”</button></li>` : '') +
-      list.map((c) => `<li><button class="opt" data-act="opt-cat" data-cat="${esc(c.id)}">${esc(c.nome)}${cur === c.id ? `<span class="on">${svg('<path d="M20 6L9 17l-5-5"/>')}</span>` : ''}</button></li>`).join('');
+      groups.map((x) => (x.g === null ? '' : `<li class="pgh">${x.g ? esc(x.g) : 'Sem grupo'}</li>`) + x.cats.map((c) => `<li><button class="opt" data-act="opt-cat" data-cat="${esc(c.id)}">${esc(c.nome)}${cur === c.id ? `<span class="on">${svg('<path d="M20 6L9 17l-5-5"/>')}</span>` : ''}</button></li>`).join('')).join('');
   }
   function sheetMenu() {
     const sheets = store.kind === 'sheets';
@@ -578,14 +691,29 @@
   }
   function sheetCats() {
     const count = new Map(); for (const t of T) { const c = catOf(t); count.set(c, (count.get(c) || 0) + 1); }
-    const rows = sortedCats().map((c) => {
+    const groups = realGroups();
+    const opts = (c) => {
+      const cur = soloGroup(c) ? '__own' : grupoOf(c.id);
+      return `<option value="__own"${cur === '__own' ? ' selected' : ''}>Sem grupo</option>` + groups.map((g) => `<option value="${esc(g)}"${cur === g ? ' selected' : ''}>${esc(g)}</option>`).join('') + '<option value="__new">Novo grupo…</option>';
+    };
+    const catRow = (c) => {
       if (ui.renaming === c.id) return `<li><form class="row" data-form="rename" data-cat="${esc(c.id)}" style="padding:8px 0"><label class="sr" for="rn">Novo nome</label><input class="input" id="rn" value="${esc(c.nome)}" maxlength="60" autocomplete="off"><button class="btn primary small">Salvar</button><button type="button" class="btn small" data-act="cat-cancel">Voltar</button></form></li>`;
+      if (ui.grouping === c.id) return `<li><form class="catopt" data-form="newgroup" data-cat="${esc(c.id)}"><span class="cn">${esc(c.nome)}</span><div class="row"><label class="sr" for="ng">Nome do grupo</label><input class="input" id="ng" placeholder="Nome do novo grupo" maxlength="60" autocomplete="off"><button class="btn primary small">Salvar</button><button type="button" class="btn small" data-act="cat-cancel">Voltar</button></div></form></li>`;
       const n = count.get(c.id) || 0;
-      let html = `<li><div class="opt" style="cursor:default"><span>${esc(c.nome)}</span><small class="num">${n}</small>${c.id !== 'sem' ? `<button class="btn small" data-act="cat-rename" data-cat="${esc(c.id)}">Renomear</button><button class="btn small" data-act="cat-delete" data-cat="${esc(c.id)}">Excluir</button>` : ''}</div>`;
+      let html = `<li><div class="catopt"><div class="cl1"><span class="cn">${esc(c.nome)}</span><small class="num">${n} ${n === 1 ? 'lançamento' : 'lançamentos'}</small></div>`;
+      if (c.id !== 'sem') html += `<div class="cl2"><label class="grpsel"><span class="sr">Grupo de ${esc(c.nome)}</span><select class="input" data-grp="${esc(c.id)}">${opts(c)}</select></label><button class="btn small" data-act="cat-rename" data-cat="${esc(c.id)}">Renomear</button><button class="btn small" data-act="cat-delete" data-cat="${esc(c.id)}">Excluir</button></div>`;
+      html += '</div>';
       if (ui.deleting === c.id) html += `<div class="confirmbox"><span>Excluir “${esc(c.nome)}”? ${n ? `${n === 1 ? 'O lançamento dela vai' : 'Os ' + n + ' lançamentos dela vão'} para Sem categoria.` : 'Ela não tem lançamentos.'}</span><div class="row"><button class="btn danger small" data-act="cat-dodelete" data-cat="${esc(c.id)}">Excluir</button><button class="btn small" data-act="cat-cancel">Cancelar</button></div></div>`;
       return html + '</li>';
-    }).join('');
-    openSheet(`<h3>Categorias</h3><p class="sub">Valem para vocês dois.</p>
+    };
+    const head = (g, n) => {
+      if (g === null) return '';
+      if (!g) return '<li class="pgh">Sem grupo</li>';
+      if (ui.renamingGroup === g) return `<li class="pgh"><form class="row" data-form="rengroup" data-grp="${esc(g)}"><label class="sr" for="rg">Novo nome do grupo</label><input class="input" id="rg" value="${esc(g)}" maxlength="60" autocomplete="off"><button class="btn primary small">Salvar</button><button type="button" class="btn small" data-act="cat-cancel">Voltar</button></form></li>`;
+      return `<li class="pgh"><span>${esc(g)} <small>${n} ${n === 1 ? 'categoria' : 'categorias'}</small></span><button class="linkbtn" data-act="grp-rename" data-grp="${esc(g)}">Renomear grupo</button></li>`;
+    };
+    const rows = groupedCats().map((x) => head(x.g, x.cats.length) + x.cats.map(catRow).join('')).join('');
+    openSheet(`<h3>Categorias</h3><p class="sub">Valem para vocês dois. O grupo junta categorias parecidas nos gráficos (por exemplo, Alimentação reúne restaurantes, mercado e lanches).</p>
       <form class="row" data-form="newcat"><label class="sr" for="nc">Nova categoria</label><input class="input" id="nc" placeholder="Nova categoria" maxlength="60" autocomplete="off"><button class="btn primary">Criar</button></form>
       <ul class="optlist">${rows}</ul>`);
   }
@@ -671,8 +799,26 @@
     const c = catById.get(id); const v = validName(nome, id);
     if (!c) return;
     if (v.err) { toast(v.err); return; }
-    const old = c.nome; c.nome = v.nome; render();
-    try { await store.saveCategory(c); setSync('ok', 'Salvo'); } catch (e) { c.nome = old; render(); handleError(e); }
+    const old = c.nome, oldG = c.grupo; c.nome = v.nome; if (c.grupo === old) c.grupo = v.nome; render();
+    try { await store.saveCategory(c); setSync('ok', 'Salvo'); } catch (e) { c.nome = old; c.grupo = oldG; render(); handleError(e); }
+  }
+  const cleanName = (v) => String(v || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+  async function setCategoryGroup(id, g) {
+    const c = catById.get(id); if (!c) return;
+    const nome = cleanName(g);
+    if (!nome) { toast('Dê um nome ao grupo.'); return; }
+    const old = c.grupo; c.grupo = nome; render(); setSync('busy', 'Salvando…');
+    try { await store.saveCategory(c); setSync('ok', 'Salvo'); } catch (e) { c.grupo = old; render(); handleError(e); }
+  }
+  async function renameGroup(oldG, g) {
+    const nome = cleanName(g);
+    if (!nome) { toast('Dê um nome ao grupo.'); return; }
+    if (nome === oldG) return;
+    const cats = activeCats().filter((c) => c.id !== 'sem' && grupoOf(c.id) === oldG);
+    const prev = cats.map((c) => c.grupo);
+    cats.forEach((c) => { c.grupo = nome; }); render(); setSync('busy', 'Salvando…');
+    try { for (const c of cats) await store.saveCategory(c); setSync('ok', 'Salvo'); toast(`Grupo renomeado para “${nome}”.`); }
+    catch (e) { cats.forEach((c, i) => { c.grupo = prev[i]; }); render(); handleError(e); }
   }
   async function deleteCategory(id) {
     const c = catById.get(id); if (!c || id === 'sem') return;
@@ -715,9 +861,12 @@
     else if (a === 'goto-tab') { ui.tab = el.dataset.tab; window.scrollTo(0, 0); render(); }
     else if (a === 'goto-cat') { ui.tab = 'lanc'; ui.cat = el.dataset.cat; ui.limit = 150; window.scrollTo(0, 0); render(); }
     else if (a === 'tit') { ui.tit = ui.tit === el.dataset.tit && el.classList.contains('kpi') ? 'all' : el.dataset.tit; ui.limit = 150; render(); }
+    else if (a === 'mais') sheetMais();
+    else if (a === 'opt-tab') { ui.tab = el.dataset.tab; closeSheet(); window.scrollTo(0, 0); render(); }
     else if (a === 'pie-mode') { ui.pieMode = el.dataset.mode; render(); }
     else if (a === 'pie-sel') { const c = el.dataset.cat || null; ui.pieSel = c && ui.pieSel !== c ? c : null; render(); }
-    else if (a === 'pie-toggle') { const c = el.dataset.cat; if (fora.has(c)) fora.delete(c); else fora.add(c); saveFora(); render(); }
+    else if (a === 'pie-view') { ui.pieView = el.dataset.view === 'cat' ? 'cat' : 'grupo'; LS.set(VIEW_KEY, ui.pieView); ui.pieSel = null; render(); }
+    else if (a === 'pie-toggle') { const mem = membersOf(el.dataset.ent); const allOn = mem.every((c) => !fora.has(c)); mem.forEach((c) => (allOn ? fora.add(c) : fora.delete(c))); saveFora(); render(); }
     else if (a === 'pie-all') { fora.clear(); saveFora(); render(); }
     else if (a === 'pie-none') { catAgg(T.filter((t) => inFat(t) && inTit(t))).filter((r) => r.tot > 0).forEach((r) => fora.add(r.id)); saveFora(); render(); }
     else if (a === 'pick-fatura') sheetFatura();
@@ -737,13 +886,14 @@
     else if (a === 'opt-cat') { const ids = pick ? pick.ids : []; const cat = el.dataset.cat; closeSheet(); moveTo(ids, cat); }
     else if (a === 'pick-new') { const ids = pick ? pick.ids : []; const nome = $('#pickq').value; closeSheet(); const c = await createCategory(nome); if (c) moveTo(ids, c.id); }
     else if (a === 'menu-import') { closeSheet(); chooseImportFile(); }
-    else if (a === 'menu-cats') { ui.renaming = ui.deleting = null; sheetCats(); }
+    else if (a === 'menu-cats') { ui.renaming = ui.deleting = ui.grouping = ui.renamingGroup = null; sheetCats(); }
     else if (a === 'menu-refresh') { closeSheet(); reload(); }
     else if (a === 'menu-switch') { closeSheet(); LS.del('gastos.sheet'); showScreen(screenSetup()); }
     else if (a === 'menu-logout') { closeSheet(); Auth.logout(); location.reload(); }
     else if (a === 'cat-rename') { ui.renaming = el.dataset.cat; ui.deleting = null; sheetCats(); const i = $('#rn'); if (i) { i.focus(); i.select(); } }
     else if (a === 'cat-delete') { ui.deleting = el.dataset.cat; ui.renaming = null; sheetCats(); }
-    else if (a === 'cat-cancel') { ui.renaming = ui.deleting = null; sheetCats(); }
+    else if (a === 'cat-cancel') { ui.renaming = ui.deleting = ui.grouping = ui.renamingGroup = null; sheetCats(); }
+    else if (a === 'grp-rename') { ui.renamingGroup = el.dataset.grp; ui.renaming = ui.deleting = ui.grouping = null; sheetCats(); const i = $('#rg'); if (i) { i.focus(); i.select(); } }
     else if (a === 'cat-dodelete') { const id = el.dataset.cat; ui.deleting = null; await deleteCategory(id); sheetCats(); }
     else if (a === 'do-import') doImport();
     else if (a === 'login') doLogin(el);
@@ -756,6 +906,12 @@
       t.closest('.tx').classList.toggle('sel', t.checked);
       renderActionbar();
     } else if (t.id === 'fTipo') { ui.tipo = t.value; ui.limit = 150; renderLancParts(); }
+    else if (t.matches('select[data-grp]')) {
+      const id = t.dataset.grp, c = catById.get(id), v = t.value;
+      if (!c) return;
+      if (v === '__new') { ui.grouping = id; ui.renaming = ui.deleting = ui.renamingGroup = null; sheetCats(); const i = $('#ng'); if (i) i.focus(); }
+      else setCategoryGroup(id, v === '__own' ? c.nome : v).then(() => sheetCats());
+    }
   });
   let qTimer = null;
   document.addEventListener('input', (e) => {
@@ -767,6 +923,8 @@
     const f = e.target; const kind = f.dataset.form;
     if (kind === 'newcat') { const c = await createCategory($('#nc').value); if (c) { render(); sheetCats(); toast(`Categoria “${c.nome}” criada.`); } }
     else if (kind === 'rename') { const id = f.dataset.cat; ui.renaming = null; await renameCategory(id, $('#rn').value); sheetCats(); }
+    else if (kind === 'newgroup') { const id = f.dataset.cat; const v = $('#ng').value; if (!cleanName(v)) { toast('Dê um nome ao grupo.'); return; } ui.grouping = null; await setCategoryGroup(id, v); sheetCats(); }
+    else if (kind === 'rengroup') { const g = f.dataset.grp; const v = $('#rg').value; ui.renamingGroup = null; await renameGroup(g, v); sheetCats(); }
     else if (kind === 'usedb') useDb($('#dblink').value);
     else if (f.id === 'pickForm') { /* sem uso */ }
   });
@@ -836,9 +994,15 @@
     $('#btnMenu').innerHTML = I.more;
     await reload();
   }
+  function checkVersion() {
+    let v = '';
+    try { v = getComputedStyle(document.documentElement).getPropertyValue('--app-v').replace(/["'\s]/g, ''); } catch { v = ''; }
+    if (v !== APP_V || (window.GastosStore || {}).VERSION !== APP_V) setTimeout(() => toast('Atualização incompleta: os arquivos do app no GitHub são de versões diferentes (app.js, store.js e styles.css precisam ser da mesma entrega). Suba os arquivos novos juntos. Se acabou de subir, espere alguns minutos e abra o app de novo.', [], 30000), 1500);
+  }
   async function boot() {
     if (DEMO) { $('#demoBar').hidden = false; store = new MemoryStore(DEMO.pkg); await startApp(); return; }
     if (!CFG.CLIENT_ID || CFG.CLIENT_ID.startsWith('COLE_AQUI')) { showScreen(screenConfig()); return; }
+    checkVersion();
     Auth.restore();
     if (!Auth.valid()) { showScreen(screenLogin(false)); const ok = await Auth.waitReady(); showScreen(screenLogin(ok)); return; }
     await Auth.waitReady();
