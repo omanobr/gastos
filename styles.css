@@ -15,7 +15,7 @@
   --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
   --r:12px; --tab-h:62px;
-  --app-v:5; /* precisa bater com APP_V no app.js */
+  --app-v:6; /* precisa bater com APP_V no app.js */
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
@@ -301,6 +301,20 @@ details.fold summary{cursor:pointer;color:var(--accent);font-weight:500;padding:
 .catopt .cl2{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .catopt .grpsel{flex:1 1 150px;min-width:0}
 .catopt select.input{padding:7px 10px;font-size:14px;min-height:36px}
+
+/* Resumo: por fatura e maiores gastos */
+.fat{display:grid;gap:6px;padding:12px 0;border-bottom:1px solid var(--line);min-width:0}
+.fat:last-child{border-bottom:0;padding-bottom:2px}
+.fat .fh{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.fat .fn{font:600 16px/1.25 var(--f-display)}
+.fat .fv{font-weight:600;font-size:15px;white-space:nowrap}
+.fat .fm{font-size:13px;color:var(--ink-2)}
+.toprow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 12px;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:11px 0;color:inherit;font:inherit;min-height:48px}
+.toprow:last-child{border-bottom:0}
+.toprow .tn{font-weight:500;overflow-wrap:anywhere}
+.toprow .tv{font-weight:600;text-align:right;white-space:nowrap}
+.toprow .tm{grid-column:1/-1;font-size:12.5px;color:var(--muted);line-height:1.45}
+.toprow .tm .dot{margin-right:4px;vertical-align:0}
 
 @media (min-width:760px){
   .gbody{display:grid;grid-template-columns:minmax(260px,320px) minmax(0,1fr);gap:28px;align-items:start}

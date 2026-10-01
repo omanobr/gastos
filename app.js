@@ -6,7 +6,7 @@
   const { SheetsStore, MemoryStore, planImport } = window.GastosStore;
   const SCOPE_SHEETS = 'https://www.googleapis.com/auth/spreadsheets';
   const SCOPES = SCOPE_SHEETS + ' https://www.googleapis.com/auth/userinfo.email';
-  const APP_V = '5'; // precisa bater com --app-v no styles.css
+  const APP_V = '6'; // precisa bater com --app-v no styles.css
 
   /* ---------- utilidades ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -20,6 +20,23 @@
   const pct = (a, b) => (b ? PCT.format(a / b) : '0,0%');
   const MESES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
   const ymLabel = (ym) => MESES[+ym.slice(5, 7) - 1] + '/' + ym.slice(2, 4);
+  const MESES_EXT = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+  const mesNome = (ym) => MESES_EXT[+String(ym).slice(5, 7) - 1] || String(ym);
+  const mesAno = (ym) => { const n = mesNome(ym); return n.charAt(0).toUpperCase() + n.slice(1) + ' de ' + String(ym).slice(0, 4); };
+  const mesCurto = (ym) => mesNome(ym) + (String(ym).slice(0, 4) === String(new Date().getFullYear()) ? '' : '/' + String(ym).slice(0, 4));
+  // Nome do estabelecimento sem caixa alta, sem asterisco e sem palavra repetida ("ANTHROPIC* CLAUDE SUB" vira "Anthropic Claude Sub").
+  const MINUSC = new Set(['de', 'da', 'do', 'das', 'dos', 'e', 'em', 'com', 'por', 'na', 'no']);
+  function prettyName(raw) {
+    const seen = new Set(), out = [];
+    for (const w of String(raw || '').replace(/[*_]+/g, ' ').split(/\s+/)) {
+      if (!w) continue;
+      const k = w.toLowerCase(); if (seen.has(k)) continue; seen.add(k);
+      if (out.length && MINUSC.has(k)) out.push(k);
+      else if (w.length <= 2 && /^[A-Z]+$/.test(w)) out.push(w); // siglas curtas: SA, MP, RT
+      else out.push(k.charAt(0).toUpperCase() + k.slice(1));
+    }
+    return out.join(' ') || String(raw || '');
+  }
   const addMonths = (ym, k) => { let y = +ym.slice(0, 4), m = +ym.slice(5, 7) - 1 + k; y += Math.floor(m / 12); m = ((m % 12) + 12) % 12; return y + '-' + String(m + 1).padStart(2, '0'); };
   const ddmm = (iso) => (iso && iso.length >= 10 ? iso.slice(8, 10) + '/' + iso.slice(5, 7) : '');
   const thisYear = String(new Date().getFullYear());
@@ -59,7 +76,7 @@
   let titulares = [];
   let lastLoad = 0;
   let pick = null; // gaveta de categoria aberta: { ids }
-  const ui = { tab: 'resumo', fat: 'all', tit: 'all', cat: 'all', tipo: 'all', q: '', qn: [], limit: 150, selMode: false, sel: new Set(), renaming: null, deleting: null, pendingImport: null, pieMode: 'juntos', pieSel: null, grouping: null, renamingGroup: null };
+  const ui = { tab: 'resumo', fat: 'all', tit: 'all', cat: 'all', tipo: 'all', q: '', qn: [], limit: 150, selMode: false, sel: new Set(), renaming: null, deleting: null, pendingImport: null, pieSel: null, grouping: null, renamingGroup: null };
 
   const catOf = (t) => { const c = catById.get(t.categoria); return c && c.ativa !== false ? t.categoria : 'sem'; };
   const catName = (id) => (catById.get(id) || {}).nome || 'Sem categoria';
@@ -326,25 +343,38 @@
         ${multi ? `<span class="split num">${titulares.map((h) => `${esc(h)} ${money(r.by[h] || 0)}`).join(' · ')}</span>` : ''}
       </button>`).join('');
     const fats = D.faturas.filter((f) => ui.fat === 'all' || f.id === ui.fat).slice().reverse();
-    const maxF = Math.max(1, ...fats.map((f) => sumC(T.filter((t) => t.fatura === f.id))));
+    const sumF = (id) => sumC(T.filter((t) => t.fatura === id));
+    const maxF = Math.max(1, ...fats.map((f) => sumF(f.id)));
     const fatHtml = fats.map((f) => {
       const Lf = T.filter((t) => t.fatura === f.id);
-      const by = {}; for (const t of Lf) by[t.titular] = (by[t.titular] || 0) + t.cents;
-      const next = D.faturas[D.faturas.indexOf(f) + 1];
-      const pago = next && next.pagamento_anterior_em ? `paga em ${ddmm(next.pagamento_anterior_em)}` : `vence em ${ddmm(f.vencimento)}`;
       const s = sumC(Lf);
+      const by = {}; for (const t of Lf) by[t.titular] = (by[t.titular] || 0) + t.cents;
+      const i = D.faturas.indexOf(f), next = D.faturas[i + 1], prev = D.faturas[i - 1];
+      let pay = `Vence em ${ddmm(f.vencimento)}`;
+      if (next && next.pagamento_anterior_em) {
+        const pv = Math.round(Number(next.pagamento_anterior_valor) * 100);
+        pay = pv && pv !== s && next.pagamento_anterior_valor !== '' ? `Pagamento de ${money(pv)} em ${ddmm(next.pagamento_anterior_em)}` : `Paga em ${ddmm(next.pagamento_anterior_em)}`;
+      }
       const confere = f.total !== '' && Math.round(Number(f.total) * 100) === s;
-      return `<div class="plan"><span class="pn">${esc(f.rotulo)}</span><span class="pv num"><strong>${money(s)}</strong></span>
-        <span class="pm">${pago}${confere ? ' · confere com a fatura' : ''}</span><span class="pm num" style="text-align:right">${titulares.map((h) => `${esc(h)} ${money(by[h] || 0)}`).join(' · ')}</span>
-        <span style="grid-column:1/-1">${stack(by, maxF)}</span></div>`;
+      let delta = '';
+      if (prev) { const ps = sumF(prev.id); if (ps > 0) { const d = (s - ps) / ps; delta = `${d >= 0 ? '↑' : '↓'} ${PCT.format(Math.abs(d))} em relação a ${mesNome(prev.id)}`; } }
+      const pos = titulares.map((h) => [h, by[h] || 0]);
+      const tp = pos.reduce((a, [, v]) => a + Math.max(0, v), 0);
+      const foot = [delta, confere ? '✓ confere com o total impresso' : ''].filter(Boolean).join(' · ');
+      return `<div class="fat"><div class="fh"><span class="fn">${esc(mesAno(f.id))}</span><span class="fv num">${money(s)}</span></div>
+        <div class="fm">${pay} · ${Lf.length} ${Lf.length === 1 ? 'lançamento' : 'lançamentos'}</div>
+        ${stack(by, maxF)}
+        <div class="slabels">${pos.map(([h, v]) => `<span class="sl"><i class="sw ${hClass(h)}"></i>${esc(h)} <strong class="num">${money(v)}</strong>${tp ? `<span class="num muted">${pct(Math.max(0, v), tp)}</span>` : ''}</span>`).join('')}</div>
+        ${foot ? `<div class="fm">${foot}</div>` : ''}</div>`;
     }).join('');
     const top = L.filter((t) => t.cents > 0 && t.tipo !== 'iof').sort((a, b) => b.cents - a.cents).slice(0, 6);
+    const topScope = (ui.fat === 'all' ? 'nas ' + D.faturas.length + ' faturas' : 'na fatura de ' + mesNome(ui.fat)) + (ui.tit === 'all' ? '' : ', de ' + ui.tit);
     return kpis + `
       <section class="card"><h2>Por categoria</h2><p class="hint">Toque numa categoria para ver e mover os lançamentos.</p>
         ${multi ? `<div class="legend">${titulares.slice(0, 3).map((h) => `<span><i class="sw ${hClass(h)}"></i>${esc(h)}</span>`).join('')}</div>` : ''}
         <div class="catlist">${catHtml || '<p class="empty">Nada neste filtro.</p>'}</div></section>
-      <section class="card"><h2>Por fatura</h2>${fatHtml}</section>
-      <section class="card"><h2>Maiores lançamentos</h2>${top.map((t) => txLine(t)).join('')}</section>`;
+      <section class="card"><h2>Por fatura</h2><p class="hint">Barra maior, fatura mais cara. As cores mostram a parte de cada um.</p>${fatHtml}</section>
+      <section class="card"><h2>Maiores gastos</h2><p class="hint">Os ${top.length} maiores ${esc(topScope)}, sem IOF e sem créditos. Toque num deles para mudar a categoria.</p>${top.map((t) => topLine(t)).join('') || '<p class="empty">Nada neste filtro.</p>'}</section>`;
   }
 
   /* ---------- gráficos ---------- */
@@ -509,16 +539,16 @@
     const view = ui.pieView;
     const slots = entSlots(view);
     const m = pieModel(L, slots, view);
-    const multi = ui.tit === 'all' && titulares.length > 1;
-    const sep = multi && ui.pieMode === 'sep';
+    const both = titulares.length > 1; // há mais de um titular para escolher
+    const juntos = ui.tit === 'all';
     if (ui.pieSel === '__outras' && !m.slices.some((x) => x.id === '__outras')) ui.pieSel = null;
     const s = selInfo(m);
-    const per = sep ? titulares.map((h) => ({ h, m: pieModel(LF.filter((t) => t.titular === h), slots, view) })) : [];
     const w = view === 'grupo' ? ['grupo', 'grupos', 'Os grupos'] : ['categoria', 'categorias', 'As categorias'];
-    const charts = sep
-      ? `<div class="donuts two">${per.map((p) => `<div class="dwrap small">${donut(p.m, selInfo(p.m), `Gastos de ${p.h} por ${w[0]}`, true)}${donutCenter(p.m, selInfo(p.m), true, `<span class="dot ${hClass(p.h)}"></span>${esc(p.h)}`)}</div>`).join('')}</div>`
-      : `<div class="donuts"><div class="dwrap">${donut(m, s, `Gastos por ${w[0]}`)}${donutCenter(m, s, false)}</div></div>`;
-    const ctrl = `<div class="gctrl"><div class="seg" role="group" aria-label="Fatias por"><button data-act="pie-view" data-view="grupo" aria-pressed="${view === 'grupo'}">Grupos</button><button data-act="pie-view" data-view="cat" aria-pressed="${view === 'cat'}">Categorias</button></div>${multi ? `<div class="seg" role="group" aria-label="Titulares"><button data-act="pie-mode" data-mode="juntos" aria-pressed="${!sep}">Juntos</button><button data-act="pie-mode" data-mode="sep" aria-pressed="${sep}">Por titular</button></div>` : ''}</div>`;
+    const who = juntos ? '' : `<span class="dot ${hClass(ui.tit)}"></span>${esc(ui.tit)}`;
+    const charts = `<div class="donuts"><div class="dwrap">${donut(m, s, `Gastos${juntos ? '' : ' de ' + ui.tit} por ${w[0]}`)}${donutCenter(m, s, false, who)}</div></div>`;
+    // Juntos / Felipe / Amada: é o mesmo filtro de titular do alto da tela, só que à mão aqui no gráfico
+    const titSeg = both ? `<div class="seg" role="group" aria-label="Titular do gráfico">${[['all', 'Juntos']].concat(titulares.map((h) => [h, h])).map(([v, l]) => `<button data-act="tit" data-tit="${esc(v)}" aria-pressed="${ui.tit === v}">${esc(l)}</button>`).join('')}</div>` : '';
+    const ctrl = `<div class="gctrl"><div class="seg" role="group" aria-label="Fatias por"><button data-act="pie-view" data-view="grupo" aria-pressed="${view === 'grupo'}">Grupos</button><button data-act="pie-view" data-view="cat" aria-pressed="${view === 'cat'}">Categorias</button></div>${titSeg}</div>`;
     let act;
     if (!s) act = `<p class="hint center">Toque numa fatia ou num nome da lista para ${view === 'grupo' ? 'ver o que tem dentro' : 'destacar'}.</p>`;
     else if (s.id === '__outras') act = `<p class="hint center">${w[2]} com o quadrado cinza, na lista, formam essa fatia.</p>`;
@@ -532,14 +562,21 @@
       const state = !r.on ? 'false' : r.partial ? 'mixed' : 'true';
       const sub = [];
       if (view === 'grupo') sub.push(`<span class="lmem">${r.members.map((x) => `<span${x.on ? '' : ' class="xoff"'}>${esc(catName(x.id))}</span>`).join(', ')}</span>`);
-      if (sep) sub.push(`<span class="lsub num">${per.map((p) => { const x = p.m.rows.find((y) => y.id === r.id); const v = x ? x.tot : 0; return `${esc(p.h)} ${money(v)}${v && p.m.total ? ' · ' + pct(v, p.m.total) : ''}`; }).join('<br>')}</span>`);
       return `<div class="lg${r.on ? '' : ' off'}${ui.pieSel === r.id ? ' sel' : ''}"><button class="lgchk" data-act="pie-toggle" data-ent="${esc(r.id)}" aria-pressed="${state}" aria-label="${r.on ? 'Tirar do gráfico' : 'Pôr no gráfico'}: ${esc(r.label)}"><span class="box">${state === 'true' ? CHECK : state === 'mixed' ? DASH : ''}</span></button><button class="lgmain" data-act="pie-sel" data-cat="${esc(r.id)}"><i class="sw ${k}" style="background:${pieColor(k)}"></i><span class="ln">${esc(r.label)}</span><span class="lnum"><span class="lv num">${money(r.on ? r.tot : r.all)}</span><span class="lp num">${r.on && m.total ? pct(r.tot, m.total) : 'fora'}</span></span>${sub.join('')}</button></div>`;
     }).join('');
     const credit = m.credit < 0 ? `<p class="hint gnote">Créditos e estornos (<span class="num">${money(m.credit)}</span>) não entram no gráfico.</p>` : '';
     const scope = (ui.fat === 'all' ? `todas as ${D.faturas.length} faturas` : 'a fatura ' + esc(fatLabel(ui.fat))) + (ui.tit === 'all' ? '' : ', só ' + esc(ui.tit));
     return `<section class="card graf"><h2>Para onde vai o dinheiro</h2><p class="hint">Percentual sobre ${scope}. Desmarque na lista o que não quer ver no gráfico.</p>
-      <div class="gbody"><div class="gleft">${ctrl}${charts}<div class="gact">${act}</div>${drillHtml(s)}${multi ? splitHtml(LF, m) : ''}</div>
+      <div class="gbody"><div class="gleft">${ctrl}${charts}<div class="gact">${act}</div>${drillHtml(s)}${both && juntos ? splitHtml(LF, m) : ''}</div>
       <div class="gright">${bar}<div class="lglist">${list || '<p class="empty">Nada neste filtro.</p>'}</div>${credit}</div></div></section>`;
+  }
+  function topLine(t) {
+    const bits = [`<span class="dot ${hClass(t)}"></span>${esc(t.titular)}`, ddmm(t.data), esc(catName(catOf(t)))];
+    if (ui.fat === 'all') bits.push('fatura de ' + esc(mesCurto(t.fatura)));
+    const extra = [];
+    if (t.pn) extra.push(`Parcela ${t.pn} de ${t.pN}`);
+    if (t.detalhes) extra.push('Compra no exterior: ' + esc(t.detalhes));
+    return `<button class="toprow" data-act="catbtn" data-id="${esc(t.id)}"><span class="tn">${esc(prettyName(t.estabelecimento || t.descricao))}</span><span class="tv num">${money(t.cents)}</span><span class="tm">${bits.join(' · ')}</span>${extra.length ? `<span class="tm">${extra.join(' · ')}</span>` : ''}</button>`;
   }
   function txLine(t) {
     return `<div class="plan"><span class="pn">${esc(t.estabelecimento || t.descricao)}${t.pn ? ` <span class="tag parc">${esc(t.parcela)}</span>` : ''}</span><span class="pv num">${money(t.cents)}</span>
@@ -863,7 +900,6 @@
     else if (a === 'tit') { ui.tit = ui.tit === el.dataset.tit && el.classList.contains('kpi') ? 'all' : el.dataset.tit; ui.limit = 150; render(); }
     else if (a === 'mais') sheetMais();
     else if (a === 'opt-tab') { ui.tab = el.dataset.tab; closeSheet(); window.scrollTo(0, 0); render(); }
-    else if (a === 'pie-mode') { ui.pieMode = el.dataset.mode; render(); }
     else if (a === 'pie-sel') { const c = el.dataset.cat || null; ui.pieSel = c && ui.pieSel !== c ? c : null; render(); }
     else if (a === 'pie-view') { ui.pieView = el.dataset.view === 'cat' ? 'cat' : 'grupo'; LS.set(VIEW_KEY, ui.pieView); ui.pieSel = null; render(); }
     else if (a === 'pie-toggle') { const mem = membersOf(el.dataset.ent); const allOn = mem.every((c) => !fora.has(c)); mem.forEach((c) => (allOn ? fora.add(c) : fora.delete(c))); saveFora(); render(); }

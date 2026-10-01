@@ -1,6 +1,6 @@
 # Gastos do Cartão
 
-App para os dois acompanharem os gastos do cartão no celular: resumo por titular e categoria, lista de lançamentos para classificar, parcelas a vencer, cobranças que se repetem e as análises que o Claude escreve a cada fatura.
+App para os dois acompanharem os gastos do cartão no celular: resumo por titular e categoria, gráficos de pizza por categoria (com filtro e divisão entre titulares), extrato para classificar os lançamentos, parcelas a vencer, cobranças que se repetem e as análises que o Claude escreve a cada fatura.
 
 Os dados ficam numa planilha do Google Sheets no seu Drive (o "banco"). O app não tem servidor: ele roda no navegador, entra com a conta Google de cada um e lê e grava direto na planilha. O site publicado não contém nenhum dado financeiro.
 
@@ -45,7 +45,7 @@ Alternativas: Netlify (arrastar a pasta em app.netlify.com/drop) ou Railway (com
 1. **Felipe:** abra o endereço no Chrome do celular e toque em **Entrar com Google**. O Google mostra um aviso de app em teste: confirme e, na tela de permissão, marque a caixa de acesso às planilhas. Depois toque em **Criar o banco no meu Google Drive**. Em seguida, **Menu > Importar arquivo do Claude** e escolha `dados-iniciais.json`.
 2. No Google Drive, compartilhe a planilha **Gastos do Cartão (banco do app)** com a conta Google da sua esposa, como **Editor**.
 3. **Ela:** abre o mesmo endereço, entra com a conta dela e cola o link da planilha em **Colar o link da planilha já criada**.
-4. Para ninguém precisar colar o link, coloque o ID da planilha em `config.js`, no campo `SPREADSHEET_ID`, e publique de novo. O ID é o trecho entre `/d/` e `/edit` no endereço da planilha.
+4. Para ninguém precisar colar o link, coloque a planilha em `config.js`, no campo `SPREADSHEET_ID`, e publique de novo. Pode ser o link inteiro ou só o ID, que é o trecho entre `/d/` e `/edit` no endereço.
 5. **Instalar:** no Chrome, menu **⋮ > Instalar app** (ou **Adicionar à tela inicial**). O app ganha ícone e abre em tela cheia.
 
 Depois de importar, apague o `dados-iniciais.json` do celular: ele contém os lançamentos.
@@ -60,12 +60,16 @@ Se quiser um arquivo `.apk` em vez de instalar pelo Chrome: abra pwabuilder.com,
 2. No app: **Menu > Importar arquivo do Claude**. Lançamentos que já estão no banco são ignorados, e as regras que vocês criaram no app ("Mover os N e os próximos") têm prioridade sobre a sugestão do arquivo.
 3. Se o conector **Google Sheets** estiver ligado na conversa com o Claude, ele pode gravar a fatura direto na planilha, sem arquivo.
 
+## Grupos de categorias
+
+Cada categoria pertence a um grupo (a categoria mãe), por exemplo Alimentação reúne restaurantes, mercado, lanches e delivery. Os gráficos mostram a pizza por grupo e, ao tocar num grupo, o que tem dentro. Para mudar o grupo de uma categoria, criar um grupo ou renomear um grupo: **Menu > Categorias**. Categoria sem grupo aparece sozinha no gráfico.
+
 ## Estrutura da planilha
 
 | Aba | Conteúdo |
 |---|---|
 | `lancamentos` | Um lançamento por linha. A coluna `categoria` guarda o código da categoria |
-| `categorias` | Código, nome e se está ativa. Excluir no app só desativa |
+| `categorias` | Código, nome, se está ativa e o grupo (categoria mãe). Excluir no app só desativa. Grupo em branco usa o padrão do app |
 | `faturas` | Vencimento, fechamento, total e parcelas a vencer de cada fatura |
 | `cartoes` | Final do cartão e titular |
 | `regras` | Estabelecimento e a categoria que ele recebe nas próximas importações |
