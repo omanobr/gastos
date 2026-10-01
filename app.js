@@ -44,6 +44,7 @@
     refresh: svg('<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>'),
     table: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/>'),
     swap: svg('<path d="M7 7h13l-4-4M17 17H4l4 4"/>'),
+    pie: svg('<path d="M21 12a9 9 0 1 1-9-9v9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/>'),
     out: svg('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'),
   };
 
@@ -56,7 +57,7 @@
   let titulares = [];
   let lastLoad = 0;
   let pick = null; // gaveta de categoria aberta: { ids }
-  const ui = { tab: 'resumo', fat: 'all', tit: 'all', cat: 'all', tipo: 'all', q: '', qn: [], limit: 150, selMode: false, sel: new Set(), renaming: null, deleting: null, pendingImport: null };
+  const ui = { tab: 'resumo', fat: 'all', tit: 'all', cat: 'all', tipo: 'all', q: '', qn: [], limit: 150, selMode: false, sel: new Set(), renaming: null, deleting: null, pendingImport: null, pieMode: 'juntos', pieSel: null };
 
   const catOf = (t) => { const c = catById.get(t.categoria); return c && c.ativa !== false ? t.categoria : 'sem'; };
   const catName = (id) => (catById.get(id) || {}).nome || 'Sem categoria';
@@ -239,7 +240,7 @@
     const v = $('#view');
     v.classList.toggle('has-action', ui.selMode && ui.sel.size > 0);
     if (!T.length) { v.innerHTML = viewEmpty(); renderActionbar(); return; }
-    v.innerHTML = ui.tab === 'resumo' ? viewResumo() : ui.tab === 'lanc' ? viewLanc() : ui.tab === 'parc' ? viewParcelas() : ui.tab === 'rec' ? viewRecorrentes() : viewAnalises();
+    v.innerHTML = ui.tab === 'resumo' ? viewResumo() : ui.tab === 'graf' ? viewGraficos() : ui.tab === 'lanc' ? viewLanc() : ui.tab === 'parc' ? viewParcelas() : ui.tab === 'rec' ? viewRecorrentes() : viewAnalises();
     if (ui.tab === 'lanc') renderLancParts();
     renderActionbar();
   }
@@ -251,8 +252,8 @@
   }
   function renderTabbar() {
     const pend = T.filter((t) => catOf(t) === 'sem' || needsReview(t)).length;
-    const tabs = [['resumo', 'Resumo', I.resumo], ['lanc', 'Lançamentos', I.lanc], ['parc', 'Parcelas', I.parc], ['rec', 'Recorrentes', I.rec], ['anal', 'Análises', I.anal]];
-    $('#tabbar').innerHTML = tabs.map(([id, l, ic]) => `<button role="tab" data-act="tab" data-tab="${id}" aria-selected="${ui.tab === id}">${ic}<span>${l}</span>${id === 'lanc' && pend ? `<span class="badge">${pend}</span>` : ''}</button>`).join('');
+    const tabs = [['resumo', 'Resumo', I.resumo], ['graf', 'Gráficos', I.pie], ['lanc', 'Extrato', I.lanc], ['parc', 'Parcelas', I.parc], ['rec', 'Fixos', I.rec], ['anal', 'Análises', I.anal]];
+    $('#tabbar').innerHTML = tabs.map(([id, l, ic]) => `<button role="tab" data-act="tab" data-tab="${id}" aria-selected="${ui.tab === id}">${ic}<span class="tl">${l}</span>${id === 'lanc' && pend ? `<span class="badge">${pend}</span>` : ''}</button>`).join('');
   }
   function viewEmpty() {
     return `<section class="card"><h2>O banco está vazio</h2><p class="hint">Importe o arquivo de dados que o Claude gerou (termina em .json). Depois disso, os lançamentos aparecem aqui para os dois.</p><button class="btn primary block" data-act="menu-import">${'Importar arquivo'}</button></section>`;
@@ -302,6 +303,131 @@
         <div class="catlist">${catHtml || '<p class="empty">Nada neste filtro.</p>'}</div></section>
       <section class="card"><h2>Por fatura</h2>${fatHtml}</section>
       <section class="card"><h2>Maiores lançamentos</h2>${top.map((t) => txLine(t)).join('')}</section>`;
+  }
+
+  /* ---------- gráficos ---------- */
+  // Cor fixa por categoria, calculada sobre o banco inteiro, para a cor não mudar com os filtros de fatura e titular.
+  // Quando uma delas é desmarcada, a cor livre passa para a próxima maior; as outras não mudam de cor.
+  // Azul e laranja ficam reservados para os titulares. As demais categorias aparecem em cinza, cada uma na sua fatia.
+  const PIE_K = 6;
+  const FORA_KEY = 'gastos.graf.fora';
+  let fora = new Set();
+  try { fora = new Set(JSON.parse(LS.get(FORA_KEY) || '[]')); } catch { fora = new Set(); }
+  const saveFora = () => LS.set(FORA_KEY, JSON.stringify([...fora]));
+  const BRLc = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', notation: 'compact', maximumFractionDigits: 1 });
+  const CHECK = svg('<path d="M20 6L9 17l-5-5"/>');
+  function catSlots() {
+    // Entram primeiro as 3 maiores categorias de cada titular (para a maior de cada um não ficar cinza) e depois as maiores do total.
+    const tot = new Map(), perT = new Map();
+    for (const t of T) {
+      const c = catOf(t);
+      tot.set(c, (tot.get(c) || 0) + t.cents);
+      if (!perT.has(t.titular)) perT.set(t.titular, new Map());
+      const pm = perT.get(t.titular); pm.set(c, (pm.get(c) || 0) + t.cents);
+    }
+    const byTot = (a, b) => tot.get(b) - tot.get(a);
+    const ranked = [...tot.keys()].filter((id) => tot.get(id) > 0).sort(byTot);
+    const fav = new Set();
+    for (const pm of perT.values()) [...pm.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 3).forEach(([id]) => fav.add(id));
+    const order = ranked.filter((id) => fav.has(id)).concat(ranked.filter((id) => !fav.has(id)));
+    const base = order.slice(0, PIE_K).sort(byTot);
+    const slots = new Map(), free = [];
+    base.forEach((id, i) => { if (fora.has(id)) free.push(i); else slots.set(id, i); });
+    for (const id of order.slice(PIE_K)) { if (!free.length) break; if (!fora.has(id)) slots.set(id, free.shift()); }
+    return slots;
+  }
+  function pieModel(list, slots) {
+    const all = catAgg(list);
+    const rows = all.filter((r) => r.tot > 0).sort((a, b) => b.tot - a.tot);
+    const inc = rows.filter((r) => !fora.has(r.id));
+    const total = inc.reduce((s, r) => s + r.tot, 0);
+    const colored = inc.filter((r) => slots.has(r.id)).sort((a, b) => slots.get(a.id) - slots.get(b.id));
+    const gray = inc.filter((r) => !slots.has(r.id));
+    const slices = colored.map((r) => ({ id: r.id, v: r.tot, k: 'pk' + slots.get(r.id) })).concat(gray.map((r) => ({ id: r.id, v: r.tot, k: 'pkx' })));
+    const credit = all.filter((r) => r.tot < 0).reduce((s, r) => s + r.tot, 0);
+    return { rows, inc, total, slices, credit };
+  }
+  function selInfo(m) {
+    const id = ui.pieSel;
+    if (!id) return null;
+    const r = m.inc.find((x) => x.id === id);
+    return { id, label: catName(id), v: r ? r.tot : 0, slice: r ? m.slices.find((x) => x.id === id) : null, off: fora.has(id) };
+  }
+  function sectorPath(a0, a1) {
+    const C = 60, R1 = 57, R0 = 37;
+    const P = (r, a) => `${(C + r * Math.sin(a)).toFixed(2)} ${(C - r * Math.cos(a)).toFixed(2)}`;
+    if (a1 - a0 >= 2 * Math.PI - 1e-6) return `M${C} ${C - R1}A${R1} ${R1} 0 1 1 ${C} ${C + R1}A${R1} ${R1} 0 1 1 ${C} ${C - R1}ZM${C} ${C - R0}A${R0} ${R0} 0 1 0 ${C} ${C + R0}A${R0} ${R0} 0 1 0 ${C} ${C - R0}Z`;
+    const big = a1 - a0 > Math.PI ? 1 : 0;
+    return `M${P(R1, a0)}A${R1} ${R1} 0 ${big} 1 ${P(R1, a1)}L${P(R0, a1)}A${R0} ${R0} 0 ${big} 0 ${P(R0, a0)}Z`;
+  }
+  function donut(m, s, aria) {
+    let a = 0, body = '';
+    if (!m.total) body = `<path class="pk-empty" fill-rule="evenodd" d="${sectorPath(0, 2 * Math.PI)}"/>`;
+    else for (const x of m.slices) {
+      const a1 = a + (x.v / m.total) * 2 * Math.PI;
+      const cls = x.k + (s && s.slice ? (s.slice === x ? ' on' : ' dim') : '');
+      body += `<path class="${cls}" fill-rule="evenodd" d="${sectorPath(a, a1)}" data-act="pie-sel" data-cat="${esc(x.id)}"><title>${esc(catName(x.id))}: ${money(x.v)} (${pct(x.v, m.total)})</title></path>`;
+      a = a1;
+    }
+    body += '<circle cx="60" cy="60" r="36" fill="transparent" data-act="pie-sel" data-cat=""/>';
+    return `<svg class="donut" viewBox="0 0 120 120" role="img" aria-label="${esc(aria)}">${body}</svg>`;
+  }
+  function donutCenter(m, s, compact, title) {
+    const f = compact ? (c) => BRLc.format(c / 100) : money;
+    const head = title ? `<span class="dt">${title}</span>` : '';
+    if (s) {
+      const p = s.off ? 'fora do gráfico' : s.v && m.total ? pct(s.v, m.total) : 'sem gastos';
+      return `<div class="dc">${head}<span class="dn">${esc(s.label)}</span><span class="dv">${f(s.v)}</span><span class="dp">${p}</span></div>`;
+    }
+    const n = m.inc.length;
+    return `<div class="dc">${head || '<span class="dn">No gráfico</span>'}<span class="dv">${f(m.total)}</span><span class="dp">${n} ${n === 1 ? 'categoria' : 'categorias'}</span></div>`;
+  }
+  function splitHtml(LF, m) {
+    const s = selInfo(m);
+    const set = new Set(s ? [s.id] : m.inc.map((r) => r.id));
+    const by = {};
+    for (const t of LF) if (set.has(catOf(t))) by[t.titular] = (by[t.titular] || 0) + t.cents;
+    const pos = titulares.map((h) => [h, Math.max(0, by[h] || 0)]);
+    const tot = pos.reduce((a, [, v]) => a + v, 0);
+    const segs = pos.filter(([, v]) => v > 0);
+    const bar = tot
+      ? `<div class="split100">${segs.map(([h, v], i) => `<span class="bseg ${hClass(h)}${i === 0 ? ' first' : ''}${i === segs.length - 1 ? ' end' : ''}" style="width:${((v / tot) * 100).toFixed(2)}%" title="${esc(h)}: ${money(v)}"></span>`).join('')}</div>`
+      : '<div class="split100"><span class="bseg empty" style="width:100%"></span></div>';
+    const labels = titulares.map((h) => `<span class="sl"><i class="sw ${hClass(h)}"></i>${esc(h)} <strong class="num">${money(by[h] || 0)}</strong>${tot ? `<span class="num muted">${pct(Math.max(0, by[h] || 0), tot)}</span>` : ''}</span>`).join('');
+    const what = s ? esc(s.label) : m.inc.length < m.rows.length ? 'categorias marcadas' : 'todas as categorias';
+    return `<div class="gsplit"><div class="gsh"><span class="eyebrow">Divisão entre titulares</span><span class="gsw">${what}</span></div>${bar}<div class="slabels">${labels}</div></div>`;
+  }
+  function viewGraficos() {
+    const LF = T.filter(inFat);
+    const L = LF.filter(inTit);
+    const slots = catSlots();
+    const m = pieModel(L, slots);
+    const multi = ui.tit === 'all' && titulares.length > 1;
+    const sep = multi && ui.pieMode === 'sep';
+    const s = selInfo(m);
+    const per = sep ? titulares.map((h) => ({ h, m: pieModel(LF.filter((t) => t.titular === h), slots) })) : [];
+    const charts = sep
+      ? `<div class="donuts two">${per.map((p) => `<div class="dwrap small">${donut(p.m, selInfo(p.m), `Gastos de ${p.h} por categoria`)}${donutCenter(p.m, selInfo(p.m), true, `<span class="dot ${hClass(p.h)}"></span>${esc(p.h)}`)}</div>`).join('')}</div>`
+      : `<div class="donuts"><div class="dwrap">${donut(m, s, 'Gastos por categoria')}${donutCenter(m, s, false)}</div></div>`;
+    const ctrl = multi ? `<div class="gctrl"><div class="seg" role="group" aria-label="Como mostrar"><button data-act="pie-mode" data-mode="juntos" aria-pressed="${!sep}">Juntos</button><button data-act="pie-mode" data-mode="sep" aria-pressed="${sep}">Por titular</button></div></div>` : '';
+    const act = s
+      ? `<button class="btn small block" data-act="goto-cat" data-cat="${esc(s.id)}">Ver os lançamentos dessa categoria</button>`
+      : '<p class="hint center">Toque numa fatia ou num nome da lista para destacar.</p>';
+    const nOff = m.rows.filter((r) => fora.has(r.id)).length;
+    const offV = m.rows.filter((r) => fora.has(r.id)).reduce((a, r) => a + r.tot, 0);
+    const bar = `<div class="lgbar"><span>${m.rows.length - nOff} de ${m.rows.length} categorias no gráfico${nOff ? ` · fora: <span class="num">${money(offV)}</span>` : ''}</span><span class="lgbtns">${nOff ? '<button class="linkbtn" data-act="pie-all">Marcar todas</button>' : ''}${m.rows.length - nOff ? '<button class="linkbtn" data-act="pie-none">Desmarcar todas</button>' : ''}</span></div>`;
+    const list = m.rows.map((r) => {
+      const on = !fora.has(r.id);
+      const k = slots.has(r.id) ? 'pk' + slots.get(r.id) : 'pkx';
+      const nm = esc(catName(r.id));
+      const sub = sep ? `<span class="lsub num">${per.map((p) => { const x = p.m.rows.find((y) => y.id === r.id); const v = x ? x.tot : 0; return `${esc(p.h)} ${money(v)}${on && v && p.m.total ? ' · ' + pct(v, p.m.total) : ''}`; }).join('<br>')}</span>` : '';
+      return `<div class="lg${on ? '' : ' off'}${ui.pieSel === r.id ? ' sel' : ''}"><button class="lgchk" data-act="pie-toggle" data-cat="${esc(r.id)}" aria-pressed="${on}" aria-label="${on ? 'Tirar do gráfico' : 'Pôr no gráfico'}: ${nm}"><span class="box">${on ? CHECK : ''}</span></button><button class="lgmain" data-act="pie-sel" data-cat="${esc(r.id)}"><i class="sw ${k}"></i><span class="ln">${nm}</span><span class="lnum"><span class="lv num">${money(r.tot)}</span><span class="lp num">${on && m.total ? pct(r.tot, m.total) : 'fora'}</span></span>${sub}</button></div>`;
+    }).join('');
+    const credit = m.credit < 0 ? `<p class="hint gnote">Créditos e estornos (<span class="num">${money(m.credit)}</span>) não entram no gráfico.</p>` : '';
+    const scope = (ui.fat === 'all' ? `todas as ${D.faturas.length} faturas` : 'a fatura ' + esc(fatLabel(ui.fat))) + (ui.tit === 'all' ? '' : ', só ' + esc(ui.tit));
+    return `<section class="card graf"><h2>Gastos por categoria</h2><p class="hint">Percentual sobre ${scope}. Desmarque na lista o que não quer ver no gráfico.</p>
+      <div class="gbody"><div class="gleft">${ctrl}${charts}<div class="gact">${act}</div>${multi ? splitHtml(LF, m) : ''}</div>
+      <div class="gright">${bar}<div class="lglist">${list || '<p class="empty">Nada neste filtro.</p>'}</div>${credit}</div></div></section>`;
   }
   function txLine(t) {
     return `<div class="plan"><span class="pn">${esc(t.estabelecimento || t.descricao)}${t.pn ? ` <span class="tag parc">${esc(t.parcela)}</span>` : ''}</span><span class="pv num">${money(t.cents)}</span>
@@ -589,6 +715,11 @@
     else if (a === 'goto-tab') { ui.tab = el.dataset.tab; window.scrollTo(0, 0); render(); }
     else if (a === 'goto-cat') { ui.tab = 'lanc'; ui.cat = el.dataset.cat; ui.limit = 150; window.scrollTo(0, 0); render(); }
     else if (a === 'tit') { ui.tit = ui.tit === el.dataset.tit && el.classList.contains('kpi') ? 'all' : el.dataset.tit; ui.limit = 150; render(); }
+    else if (a === 'pie-mode') { ui.pieMode = el.dataset.mode; render(); }
+    else if (a === 'pie-sel') { const c = el.dataset.cat || null; ui.pieSel = c && ui.pieSel !== c ? c : null; render(); }
+    else if (a === 'pie-toggle') { const c = el.dataset.cat; if (fora.has(c)) fora.delete(c); else fora.add(c); saveFora(); render(); }
+    else if (a === 'pie-all') { fora.clear(); saveFora(); render(); }
+    else if (a === 'pie-none') { catAgg(T.filter((t) => inFat(t) && inTit(t))).filter((r) => r.tot > 0).forEach((r) => fora.add(r.id)); saveFora(); render(); }
     else if (a === 'pick-fatura') sheetFatura();
     else if (a === 'opt-fatura') { ui.fat = el.dataset.f; ui.limit = 150; closeSheet(); render(); }
     else if (a === 'menu') sheetMenu();
@@ -682,14 +813,20 @@
       const er = $('#setupErr'); if (er) { er.textContent = e.message; er.hidden = false; } btn.disabled = false; btn.textContent = 'Criar o banco no meu Google Drive';
     }
   }
+  // Aceita o link inteiro da planilha ou só o ID (o trecho entre /d/ e /edit).
+  function sheetIdFrom(v) {
+    const t = String(v || '').trim();
+    const m = /\/d\/([a-zA-Z0-9_-]{20,})/.exec(t) || /^([a-zA-Z0-9_-]{20,})$/.exec(t);
+    return m ? m[1] : '';
+  }
   function useDb(link) {
-    const m = /\/d\/([a-zA-Z0-9_-]{20,})/.exec(link) || /^([a-zA-Z0-9_-]{20,})$/.exec(link.trim());
-    if (!m) { const er = $('#setupErr'); er.textContent = 'Cole o link completo da planilha (docs.google.com/spreadsheets/d/...).'; er.hidden = false; return; }
-    LS.set('gastos.sheet', m[1]);
+    const id = sheetIdFrom(link);
+    if (!id) { const er = $('#setupErr'); er.textContent = 'Cole o link completo da planilha (docs.google.com/spreadsheets/d/...).'; er.hidden = false; return; }
+    LS.set('gastos.sheet', id);
     afterLogin();
   }
   async function afterLogin() {
-    const id = CFG.SPREADSHEET_ID || LS.get('gastos.sheet');
+    const id = sheetIdFrom(CFG.SPREADSHEET_ID) || LS.get('gastos.sheet');
     if (!id) { showScreen(screenSetup()); return; }
     store = new SheetsStore({ spreadsheetId: id, getToken: () => Auth.getToken() });
     await startApp();
