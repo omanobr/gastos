@@ -6,7 +6,7 @@
   const API = 'https://sheets.googleapis.com/v4/spreadsheets';
   const SCHEMA = {
     lancamentos: ['id', 'fatura', 'data', 'titular', 'cartao', 'descricao', 'estabelecimento', 'chave', 'cidade', 'valor', 'tipo', 'parcela', 'categoria', 'conferir', 'detalhes'],
-    categorias: ['id', 'nome', 'ativa'],
+    categorias: ['id', 'nome', 'ativa', 'grupo'],
     faturas: ['id', 'rotulo', 'vencimento', 'fechamento', 'total', 'parcelas_a_vencer', 'pagamento_anterior_em', 'pagamento_anterior_valor'],
     cartoes: ['cartao', 'titular', 'nome'],
     regras: ['chave', 'categoria', 'origem'],
@@ -71,7 +71,7 @@
     const add = { categorias: [], cartoes: [], faturas: [], lancamentos: [], regras: [], analises: [] };
     for (const c of pkg.categorias || []) {
       if (catIds.has(c.id)) continue;
-      add.categorias.push(normalize('categorias', { id: c.id, nome: c.nome, ativa: c.ativa !== false }));
+      add.categorias.push(normalize('categorias', { id: c.id, nome: c.nome, ativa: c.ativa !== false, grupo: c.grupo || '' }));
       catIds.add(c.id); if (c.ativa !== false) activeCats.add(c.id);
     }
     if (!catIds.has('sem')) { add.categorias.unshift(normalize('categorias', { id: 'sem', nome: 'Sem categoria', ativa: true })); activeCats.add('sem'); }
@@ -168,6 +168,9 @@
       await this.ensureSchema();
       const q = TABS.map((t) => ['ranges', `${t}!A:${LAST[t]}`]).concat([['valueRenderOption', 'UNFORMATTED_VALUE']]);
       const data = await this.req('GET', '/values:batchGet', null, q);
+      const stale = [];
+      (data.valueRanges || []).forEach((vr, i) => { const h = (vr.values && vr.values[0]) || []; if (SCHEMA[TABS[i]].some((k, j) => String(h[j] ?? '') !== k)) stale.push(TABS[i]); });
+      if (stale.length) { try { await this.writeHeaders(stale); } catch (e) { /* sem permissão de escrita: segue só lendo */ } }
       const out = {};
       (data.valueRanges || []).forEach((vr, i) => { out[TABS[i]] = fromRows(TABS[i], vr.values || []); });
       for (const t of TABS) out[t] = out[t] || [];
@@ -258,7 +261,7 @@
     async setCategory(items, catId) { for (const t of items) { const o = this.find('lancamentos', t._row); if (o) { o.categoria = catId; o.conferir = false; } } }
     async confirm(items) { for (const t of items) { const o = this.find('lancamentos', t._row); if (o) o.conferir = false; } }
     async addCategory(nome) { const cat = normalize('categorias', { id: newId('u'), nome, ativa: true }); this.pushRows('categorias', [cat]); return cat; }
-    async saveCategory(cat) { const o = this.find('categorias', cat._row); if (o) Object.assign(o, { nome: cat.nome, ativa: cat.ativa }); }
+    async saveCategory(cat) { const o = this.find('categorias', cat._row); if (o) Object.assign(o, { nome: cat.nome, ativa: cat.ativa, grupo: cat.grupo || '' }); }
     async saveRule(rule, existing) {
       if (existing && existing._row) { const o = this.find('regras', existing._row); if (o) Object.assign(o, { categoria: rule.categoria, origem: rule.origem }); existing.categoria = rule.categoria; return existing; }
       const r = normalize('regras', { ...rule }); this.pushRows('regras', [r]); return r;
@@ -268,5 +271,5 @@
 
   function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-  global.GastosStore = { SheetsStore, MemoryStore, planImport, ApiError, AuthError, SCHEMA, FORMAT };
+  global.GastosStore = { SheetsStore, MemoryStore, planImport, ApiError, AuthError, SCHEMA, FORMAT, VERSION: '5' };
 })(typeof window !== 'undefined' ? window : globalThis);
